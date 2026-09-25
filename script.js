@@ -144,6 +144,7 @@ async function init() {
 
     allSchools = (loaded.schools.features || []).map(normalizeFeature).filter(Boolean);
     mergeProgramOnlySchools(allSchools, programRows);
+    mergeImprovementOnlySchools(allSchools, improvementsRows);
     attachCctDirectory(allSchools, cctDirectory);
     joinPrograms(allSchools, programRows);
     joinImprovements(allSchools, improvementsRows);
@@ -250,6 +251,29 @@ function mergeProgramOnlySchools(schools, rows) {
   });
 }
 
+function mergeImprovementOnlySchools(schools, rows) {
+  const known = new Set(schools.flatMap(school => school.ccts));
+  rows.forEach(row => {
+    const key = normalizeCCT(row.cct);
+    if (!key || known.has(key) || !Number.isFinite(Number(row.lat)) || !Number.isFinite(Number(row.lon))) return;
+    const props = {
+      cct1: key,
+      inmueble: row.escuela,
+      alcaldia: row.alcaldia,
+      principal: row.nivel,
+      bm_domicilio_principal: row.direccion,
+      bm_localidad: row.colonia,
+      territorios: row.territorios || {},
+      es_solo_mantenimiento: 'SI'
+    };
+    const school = normalizeSchool(props, Number(row.lat), Number(row.lon), `mantenimiento-${key}`, false);
+    if (school) {
+      schools.push(school);
+      known.add(key);
+    }
+  });
+}
+
 function joinPrograms(schools, rows) {
   const index = new Map();
   rows.forEach(row => {
@@ -334,16 +358,33 @@ function buildProgramMenu() {
 }
 
 function buildImprovementMenu() {
-  const counts = Object.fromEntries(Object.keys(IMPROVEMENTS).map(key => [key, 0]));
+  const cctsByCategory = Object.fromEntries(Object.keys(IMPROVEMENTS).map(key => [key, new Set()]));
   improvementsRows.forEach(row => (row.categorias || []).forEach(category => {
-    counts[category.id] = (counts[category.id] || 0) + 1;
+    if (!cctsByCategory[category.id]) cctsByCategory[category.id] = new Set();
+    cctsByCategory[category.id].add(normalizeCCT(row.cct));
   }));
   q('improvementFilters').innerHTML = Object.entries(IMPROVEMENTS).map(([key, item]) => `
     <label class="inline-check">
       <input type="checkbox" value="${escapeAttr(key)}">
-      <span>${escapeHtml(item.label)} <em>${(counts[key] || 0).toLocaleString('es-MX')} CCT</em></span>
+      <span>${escapeHtml(item.label)} <em>${countCctTurns(cctsByCategory[key]).toLocaleString('es-MX')} CCT/turno · ${countPlantelsForCcts(cctsByCategory[key], allSchools).toLocaleString('es-MX')} planteles</em></span>
     </label>`).join('');
   q('improvementFilters').addEventListener('change', () => applyFilters(false));
+}
+
+function countCctTurns(ccts) {
+  const keys = new Set();
+  [...(ccts || [])].map(normalizeCCT).filter(Boolean).forEach(cct => {
+    const records = cctDirectory[cct] || [];
+    const turns = unique(records.map(record => normalizeTurn(record.turno)).filter(Boolean));
+    if (turns.length) turns.forEach(turn => keys.add(`${cct}|${turn}`));
+    else keys.add(`${cct}|SIN TURNO`);
+  });
+  return keys.size;
+}
+
+function countPlantelsForCcts(ccts, schools) {
+  const wanted = new Set([...(ccts || [])].map(normalizeCCT).filter(Boolean));
+  return new Set(schools.filter(school => school.ccts.some(cct => wanted.has(cct))).map(school => school.id)).size;
 }
 
 function prepareTerritories() {
@@ -1125,15 +1166,26 @@ function activateTabs() {
 function updateStats() {
   const term = normalizeCCT(q('buscarCCT').value);
   const cctSet = new Set(filteredSchools.flatMap(school => school.ccts.filter(key => !term || key.includes(term))));
-  const withPrograms = new Set(filteredSchools.flatMap(school => school.programs.map(row => normalizeCCT(row.cct))).filter(key => cctSet.has(key))).size;
-  const withImprovements = new Set(filteredSchools.flatMap(school => school.improvementDetails.map(row => normalizeCCT(row.cct))).filter(key => cctSet.has(key))).size;
-  const active = checkedValues('#programFilters input').length + checkedValues('#improvementFilters input').length +
+  const selectedProjects = checkedValues('#programFilters input');
+  const selectedImprovements = checkedValues('#improvementFilters input');
+  let scopeCcts = cctSet;
+  if (selectedImprovements.length) {
+    const maintenanceCcts = new Set(improvementsRows.filter(row =>
+      (row.categorias || []).some(category => selectedImprovements.includes(category.id))
+    ).map(row => normalizeCCT(row.cct)));
+    scopeCcts = new Set([...cctSet].filter(cct => maintenanceCcts.has(cct)));
+  }
+  const scopeSchools = filteredSchools.filter(school => school.ccts.some(cct => scopeCcts.has(cct)));
+  const withPrograms = new Set(scopeSchools.filter(school => school.programs.some(row =>
+    (!selectedProjects.length || selectedProjects.includes(row.proyecto_id))
+  )).map(school => school.id)).size;
+  const active = selectedProjects.length + selectedImprovements.length +
     Object.values(selectedTerritories()).reduce((sum, values) => sum + values.length, 0);
   q('summaryTitle').textContent = active ? 'Resultado del cruce' : 'Resumen visible';
   const values = [
-    [cctSet.size, 'CCT'],
-    [withPrograms, 'Con programas'],
-    [withImprovements, 'Con mantenimiento'],
+    [countCctTurns(scopeCcts), 'CCT/turno'],
+    [countPlantelsForCcts(scopeCcts, filteredSchools), 'Planteles'],
+    [withPrograms, 'Planteles con programas'],
     [active, 'Selecciones activas']
   ];
   values.forEach(([value, label], index) => {
