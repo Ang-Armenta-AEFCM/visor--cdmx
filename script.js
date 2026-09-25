@@ -942,8 +942,14 @@ function buildPopup(school, state) {
 function bindSchoolPopup(marker, school) {
   const root = marker.getPopup().getElement();
   if (!root) return;
+  const popupContent = root.querySelector('.school-popup');
+  if (popupContent) {
+    L.DomEvent.disableClickPropagation(popupContent);
+    L.DomEvent.disableScrollPropagation(popupContent);
+  }
   root.querySelectorAll('[data-select-cct]').forEach(button => {
-    button.onclick = () => {
+    button.onclick = event => {
+      L.DomEvent.stop(event);
       school.popupState.cct = normalizeCCT(button.dataset.selectCct);
       const turns = cctTurnOptions(school, school.popupState.cct);
       school.popupState.turno = turns.length === 1 ? turns[0].turno : '';
@@ -951,24 +957,29 @@ function bindSchoolPopup(marker, school) {
     };
   });
   root.querySelectorAll('[data-select-turn]').forEach(button => {
-    button.onclick = () => {
+    button.onclick = event => {
+      L.DomEvent.stop(event);
       school.popupState.turno = button.dataset.selectTurn;
       refreshSchoolPopup(marker, school);
     };
   });
   root.querySelectorAll('[data-program-key]').forEach(button => {
-    button.onclick = () => {
+    button.onclick = event => {
+      L.DomEvent.stop(event);
       const view = selectedSchoolView(school, school.popupState);
       openDetail(view, {activeTab: 'programas', selectedProgramKey: button.dataset.programKey});
     };
   });
-  root.querySelector('[data-open-detail]')?.addEventListener('click', () => {
+  root.querySelector('[data-open-detail]')?.addEventListener('click', event => {
+    L.DomEvent.stop(event);
     openDetail(selectedSchoolView(school, school.popupState));
   });
 }
 
 function refreshSchoolPopup(marker, school) {
-  marker.setPopupContent(buildPopup(school, school.popupState));
+  const popup = marker.getPopup();
+  popup.setContent(buildPopup(school, school.popupState));
+  if (!marker.isPopupOpen()) marker.openPopup();
   setTimeout(() => bindSchoolPopup(marker, school), 0);
 }
 
